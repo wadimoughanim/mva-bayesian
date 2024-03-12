@@ -16,6 +16,7 @@ def initialize_lda(documents, K):
     - word_to_id: A dictionary mapping words to unique IDs.
     - id_to_word: A dictionary mapping unique IDs to words.
     - V: The size of the vocabulary.
+    - z_d_i: The initial random topic assignment for each word in each document.
     """
     word_to_id = {}
     id_to_word = {}
@@ -50,13 +51,14 @@ def initialize_lda(documents, K):
             n_k_t[topic, word_id] += 1
             n_k[topic] += 1
 
-    return doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V
+    return doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i
 
-if __name__=='__main__':
-    # mock test -> flemme de faire unit test
+if __name__ == '__main__':
+    # mock test -> unit test si on est chaud
     from data.mock import documents
-    K=3
-    doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V = initialize_lda(documents, K)
+    K = 3
+    # Correct the order of unpacked values to match the function's return
+    doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i = initialize_lda(documents, K)
     print(doc_word_ids)
     print(n_d_k)
     print(n_k_t)
