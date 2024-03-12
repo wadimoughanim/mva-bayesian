@@ -39,11 +39,11 @@ def initialize_lda(documents, K):
     z_d_i = [[np.random.randint(K) for _ in doc] for doc in doc_word_ids]
 
     # Initialize count matrices and topic totals
-    n_d_k = np.zeros((len(documents), K))  # Document-topic counts
-    n_k_t = np.zeros((K, V))  # Topic-term counts
-    n_k = np.zeros(K)  # Total count of words assigned to each topic
+    n_d_k = np.zeros((len(documents), K))  #topic count
+    n_k_t = np.zeros((K, V))  # term counts
+    n_k = np.zeros(K)  # words assigned to each topic
 
-    # Populate count matrices based on initial random topic assignments
+    # Count matrices b: randam
     for d, doc in enumerate(doc_word_ids):
         for i, word_id in enumerate(doc):
             topic = z_d_i[d][i]

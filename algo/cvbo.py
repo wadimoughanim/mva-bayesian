@@ -37,5 +37,4 @@ if __name__ == '__main__':
     _, n_d_k, n_k_t, _, _, _, _, _ = run_cvb0(documents, K, alpha=0.1, beta=0.1)
     
     #
-    print("Document-topic counts shape:", n_d_k.shape)
-    print("Topic-term counts shape:", n_k_t.shape)
+    print('Done')
