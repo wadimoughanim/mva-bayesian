@@ -1,7 +1,8 @@
 import numpy as np
 from init import initialize_lda
 
-def cvb0_update(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K):
+###MOCK
+def cvb0_update_mock(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K):
     for d, doc in enumerate(doc_word_ids):
         for i, word_id in enumerate(doc):
             old_topic = z_d_i[d][i]
@@ -26,7 +27,7 @@ def cvb0_update(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K):
 def run_cvb0(documents, K, alpha, beta, max_iters=100):
     doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i = initialize_lda(documents, K)
     for _ in range(max_iters):
-        z_d_i = cvb0_update(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K)
+        z_d_i = cvb0_update_mock(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K)
     
     return doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i
 
@@ -37,3 +38,5 @@ if __name__ == '__main__':
     
     #
     print('Done')
+
+#### ACTUAL
