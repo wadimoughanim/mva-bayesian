@@ -1,6 +1,6 @@
 import numpy as np
 
-def initialize_lda(documents, K):
+def initialize_lda_old(documents, K):
     """
     Initialize the LDA model with random topic assignments and compute necessary counts.
     
@@ -69,3 +69,37 @@ if __name__ == '__main__':
     print(K)
     print(n_d_k.shape)
     print(n_k_t.shape)
+
+def initialize_lda(documents, K, V):
+    """
+    Initialize the LDA model for the CVB0 algorithm.
+    
+    documents: List of documents, where each document is a list of word IDs.
+    K: Number of topics
+    V: Vocabulary size
+    
+    Returns:
+    - n_d_k: Document-topic count matrix.
+    - n_k_t: Topic-term count matrix.
+    - n_k: Topic count vector.
+    - z_d_i: Topic assignment list for each word in each document.
+    """
+    D = len(documents)  # Number of documents
+    
+    # Initialize count matrices with zeros
+    n_d_k = np.zeros((D, K))  # Document-topic counts
+    n_k_t = np.zeros((K, V))  # Topic-term counts
+    n_k = np.zeros(K)  # Topic counts
+    
+    # Initialize the topic assignment z_d_i
+    z_d_i = [[np.random.randint(K) for _ in doc] for doc in documents]
+    
+    # Populate count matrices based on the random initial topic assignments
+    for d, doc in enumerate(documents):
+        for i, word_id in enumerate(doc):
+            topic = z_d_i[d][i]
+            n_d_k[d, topic] += 1
+            n_k_t[topic, word_id] += 1
+            n_k[topic] += 1
+
+    return n_d_k, n_k_t, n_k, z_d_i

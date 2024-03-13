@@ -1,88 +1,88 @@
-import numpy as np
-from init import initialize_lda
-
-###MOCK
-def cvb0_update_mock(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K):
-    for d, doc in enumerate(doc_word_ids):
-        for i, word_id in enumerate(doc):
-            old_topic = z_d_i[d][i]
-            n_d_k[d, old_topic] -= 1
-            n_k_t[old_topic, word_id] -= 1
-            n_k[old_topic] -= 1
-            
-            topic_probs = np.zeros(K)
-            for k in range(K):
-                topic_probs[k] = (n_k_t[k, word_id] + beta) / (n_k[k] + V * beta) * (n_d_k[d, k] + alpha)
-            topic_probs /= np.sum(topic_probs)  # Normalize
-            
-            new_topic = np.random.choice(np.arange(K), p=topic_probs)
-            z_d_i[d][i] = new_topic
-            
-            n_d_k[d, new_topic] += 1
-            n_k_t[new_topic, word_id] += 1
-            n_k[new_topic] += 1
-    return z_d_i
-
-
-def run_cvb0(documents, K, alpha, beta, max_iters=100):
-    doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i = initialize_lda(documents, K)
-    for _ in range(max_iters):
-        z_d_i = cvb0_update_mock(doc_word_ids, n_d_k, n_k_t, n_k, z_d_i, alpha, beta, V, K)
-    
-    return doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i
-
-if __name__ == '__main__':
-    from data.mock import documents
-    K =3 
-    _, n_d_k, n_k_t, _, _, _, _, _ = run_cvb0(documents, K, alpha=0.1, beta=0.1)
-    
-    #
-    print('Done')
-
 #### ACTUAL
-    
 import numpy as np
-from scipy.special import digamma, gammaln
+from collections import defaultdict
+from scipy.special import digamma
 
-def compute_expectation_terms(gamma_ijk, alpha, beta, n_j_dot_k, n_dot_k_x_ij, n_dot_k_dot, W):
-    """
-    Compute expectation terms using Gaussian approximation and second-order Taylor expansion.
-    """
-    # equation 16)
+def initialize_lda(documents, K):
+    word_to_id = defaultdict(lambda: len(word_to_id))
+    id_to_word = {}
+    doc_word_ids = []
+
+    # Convert words in documents to unique IDs
+    for doc in documents:
+        doc_ids = [word_to_id[word] for word in doc]
+        doc_word_ids.append(doc_ids)
+
+    # Invert word_to_id to get id_to_word mapping
+    id_to_word = {id_: word for word, id_ in word_to_id.items()}
+
+    V = len(word_to_id)  # Vocabulary size
+    n_d_k = np.zeros((len(documents), K))
+    n_k_t = np.zeros((K, V))
+    n_k = np.zeros(K)
+    z_d_i = [[np.random.randint(K) for _ in doc] for doc in documents]  # Fixed
+
+    for d, doc_ids in enumerate(doc_word_ids):
+        for i, word_id in enumerate(doc_ids):
+
+            topic = z_d_i[d][i]  # Corrected indexing
+            n_d_k[d, topic] += 1
+            n_k_t[topic, word_id] += 1
+            n_k[topic] += 1
+
+    return n_d_k, n_k_t, n_k, z_d_i, word_to_id, id_to_word, V, doc_word_ids
+
+
+
+
+def compute_expectation_terms(gamma_ijk, alpha, beta, n_d_k, n_k_t, n_k, W):
+    # (equation 16)
     E_gamma_ijk = np.sum(gamma_ijk, axis=0)
-    Var_gamma_ijk = np.sum(gamma_ijk * (1 - gamma_ijk), axis=0) 
+    Var_gamma_ijk = np.sum(gamma_ijk * (1 - gamma_ijk), axis=0)
+
+    # (equation 17)
+    E_log_alpha_n_j_dot_k = digamma(alpha + E_gamma_ijk) - digamma(alpha * K + np.sum(n_d_k))
+    E_log_beta_n_dot_k_x_ij = digamma(beta + n_k_t) - digamma(beta * W + n_k)
+    E_log_W_beta_n_dot_k_dot = digamma(W * beta + n_k) - digamma(W * beta * K + np.sum(n_k))
     
-    #(equation 17)
-    E_log_alpha_n_j_dot_k = np.log(alpha + E_gamma_ijk) - Var_gamma_ijk / (2 * (alpha + E_gamma_ijk)**2)
-    E_log_beta_n_dot_k_x_ij = np.log(beta + n_dot_k_x_ij) - n_dot_k_x_ij * (1 - n_dot_k_x_ij) / (2 * (beta + n_dot_k_x_ij)**2)
-    E_log_W_beta_n_dot_k_dot = np.log(W * beta + n_dot_k_dot) - n_dot_k_dot * (1 - n_dot_k_dot) / (2 * (W * beta + n_dot_k_dot)**2)
+    taylor_approx_n_j_dot_k = E_log_alpha_n_j_dot_k - Var_gamma_ijk / (2 * (alpha + E_gamma_ijk)**2)
+    taylor_approx_n_dot_k_x_ij = E_log_beta_n_dot_k_x_ij - n_k_t * (1 - n_k_t / n_k) / (2 * (beta + n_k_t)**2)
+    taylor_approx_n_dot_k_dot = E_log_W_beta_n_dot_k_dot - n_k * (1 - n_k / np.sum(n_k)) / (2 * (W * beta + n_k)**2)
     
-    return E_log_alpha_n_j_dot_k, E_log_beta_n_dot_k_x_ij, E_log_W_beta_n_dot_k_dot
+    return taylor_approx_n_j_dot_k, taylor_approx_n_dot_k_x_ij, taylor_approx_n_dot_k_dot
 
 def cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i):
-    """
-    Perform the exact CVB0 update using Gaussian approximations for efficiency.
-    """
-    gamma_ijk = np.full_like(n_d_k, 1.0 / K)
-    
-    for d, doc in enumerate(doc_word_ids):
-        for i, word_id in enumerate(doc):
-            old_topic = z_d_i[d][i]
+    # Initialize gamma_ijk
+    gamma_ijk = np.full((len(doc_word_ids), V, K), 1.0 / K)
+
+    for d, doc_ids in enumerate(doc_word_ids):
+        for i, word_id in enumerate(doc_ids):
+            old_topic = z_d_i[d][i]  # Ensure this is an integer. It should be, based on your initialization.
             n_d_k[d, old_topic] -= 1
             n_k_t[old_topic, word_id] -= 1
             n_k[old_topic] -= 1
-            
+
+            # Compute the expectation terms
             E_log_alpha_n_j_dot_k, E_log_beta_n_dot_k_x_ij, E_log_W_beta_n_dot_k_dot = compute_expectation_terms(
-                gamma_ijk[d], alpha, beta, n_d_k[d], n_k_t[:, word_id], n_k, V
+                gamma_ijk[d, :, :], alpha, beta, n_d_k[d, :], n_k_t[:, word_id], n_k, W=V
             )
+
+            # Update gamma_ijk using the computed expectations (equation 18)
+            for k in range(K):
+                gamma_ijk[d, word_id, k] = np.exp(
+                    E_log_alpha_n_j_dot_k[k] +
+                    E_log_beta_n_dot_k_x_ij[k] -
+                    E_log_W_beta_n_dot_k_dot[k]
+                )
             
-            # Compute the new topic probabilities using equation (18)
-            gamma_ijk[d] = np.exp(E_log_alpha_n_j_dot_k + E_log_beta_n_dot_k_x_ij - E_log_W_beta_n_dot_k_dot)
-            gamma_ijk[d] /= np.sum(gamma_ijk[d])  #Normalize the probabilities
-            new_topic = np.random.choice(K, p=gamma_ijk[d])
+            # Normalize gamma_ijk
+            gamma_ijk[d, word_id, :] /= np.sum(gamma_ijk[d, word_id, :])
+        
+            # Sample a new topic for the word
+            new_topic = np.random.choice(K, p=gamma_ijk[d, word_id, :])
             z_d_i[d][i] = new_topic
-            
-            # Update the counts using the new topic assignment
+
+            # Update the counts with the new topic assignment
             n_d_k[d, new_topic] += 1
             n_k_t[new_topic, word_id] += 1
             n_k[new_topic] += 1
@@ -90,8 +90,20 @@ def cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i)
     return gamma_ijk, z_d_i
 
 if __name__ == '__main__':
-    from data.mock import documents
-    K =3 
-    _, n_d_k, n_k_t, _, _, _, V, z_d_i = initialize_lda(documents, K)
-    gamma_ijk, z_d_i = cvb0_exact_update(documents, n_d_k, n_k_t, _, alpha=0.1, beta=0.1, V=V, K=K, z_d_i=z_d_i)
+    documents = [['word1', 'word2', 'word3'], ['word2', 'word3', 'word4'], ['word3', 'word4', 'word1']]
+    K = 3  # Number of topics
+    n_d_k, n_k_t, n_k, z_d_i, word_to_id, id_to_word, V , doc_word_ids= initialize_lda(documents, K)
+
+    alpha, beta = 0.1, 0.1
+    max_iters = 100
+    for _ in range(max_iters):
+        gamma_ijk, z_d_i = cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i)  # Updated to include z_d_i
+
+    print('Document-topic counts:', n_d_k)
+    print('Topic-term counts:', n_k_t)
+    print('Topic counts:', n_k)
+    print('Topic assignments for words in documents:', z_d_i)
+    print('Word to ID mapping:', word_to_id)
+    print('ID to word mapping:', id_to_word)
+    print('Vocabulary size:', V)
     print('Done')
