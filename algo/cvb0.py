@@ -46,30 +46,23 @@ class CollapsedVB:
                 gamma_dn = np.zeros(self.K)
 
                 for k in range(self.K):
-                    # Excluding the current word from the counts
                     phi_dnv_excluded = self.phi_dnv[d][n, k]
 
-                    # Compute expected values with smoothing
                     E_n_dk = self.n_dk[d, k] - phi_dnv_excluded + epsilon 
                     E_n_kv = self.n_kv[k, word_id] - phi_dnv_excluded + epsilon
                     E_n_k = self.n_k[k] - phi_dnv_excluded + epsilon
-                    #Compute variances with smoothing
                     Var_n_dk = E_n_dk * (1 - E_n_dk / (self.n_dk[d, :].sum() - phi_dnv_excluded + epsilon))
                     Var_n_kv = E_n_kv * (1 - E_n_kv / (self.n_kv[k, :].sum() - phi_dnv_excluded + epsilon))
                     Var_n_k = E_n_k * (1 - E_n_k / (self.n_k.sum() - phi_dnv_excluded + epsilon))
 
-                    # Use the Gaussian approximation for the digamma function around the expected values
-                    # This replaces the correction_n_* terms from your current code
                     approx_digamma_n_dk = digamma(self.alpha + E_n_dk)
                     approx_digamma_n_kv = digamma(self.beta + E_n_kv)
                     approx_digamma_n_k = digamma(self.beta * self.V + E_n_k)
                     
-                    # Adjust gamma_dn with Gaussian approximations
                     gamma_dn[k] = np.exp(
                         approx_digamma_n_dk - digamma(self.alpha * self.K + self.n_dk[d, :].sum() + epsilon)
                         + approx_digamma_n_kv - digamma(self.beta * self.V + self.n_kv[k, :].sum() + epsilon)
                         + approx_digamma_n_k - digamma(self.beta * self.V * self.K + self.n_k.sum() + epsilon)
-                        # Incorporate the variance approximations here
                         - Var_n_dk / (2 * (self.alpha + E_n_dk)**2)
                         - Var_n_kv / (2 * (self.beta + E_n_kv)**2)
                         - Var_n_k / (2 * (self.beta * self.V + E_n_k)**2)
