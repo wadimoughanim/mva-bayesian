@@ -2,15 +2,13 @@ import numpy as np
 from scipy.special import digamma, polygamma
 
 class CollapsedVB:
-    def __init__(self, documents, K, alpha=0.1, beta=0.1):
+    def __init__(self, documents, K, alpha=0.01, beta=0.01):
         self.documents = documents
         self.K = K
         self.alpha = alpha
         self.beta = beta
         self.V = self._build_vocabulary()
         self.D = len(documents)
-        
-        # Initialize counts and φ
         self.n_dk, self.n_kv, self.n_k = self._initialize_counts()
         self.phi_dnv = self._initialize_phi()
 
@@ -24,7 +22,6 @@ class CollapsedVB:
         n_kv = np.zeros((self.K, self.V))
         n_k = np.zeros(self.K)
         
-        # Random initialization for counts
         for d, doc in enumerate(self.documents):
             for word in doc:
                 word_id = self.word_to_id[word]
@@ -35,63 +32,69 @@ class CollapsedVB:
         return n_dk, n_kv, n_k
 
     def _initialize_phi(self):
-        # Initialize φ with uniform probabilities
         phi_dnv = {}
         for d, doc in enumerate(self.documents):
             phi_dnv[d] = np.full((len(doc), self.K), 1.0 / self.K)
         return phi_dnv
 
     def _update_phi(self):
+        epsilon = 1e-10 # Aavoid division by zero
+
         for d, doc in enumerate(self.documents):
             for n, word in enumerate(doc):
                 word_id = self.word_to_id[word]
                 gamma_dn = np.zeros(self.K)
+
                 for k in range(self.K):
-                    # The sums here are not directly from the paper but are necessary to compute the means
-                    # for each document-topic (n_dk), topic-word (n_kv), and topic (n_k) after excluding
-                    # the current assignment of word n to topic k (phi_dnv)
-                    n_dk_sum = np.sum(self.n_dk[d, :]) - self.phi_dnv[d][n, k]
-                    n_kv_sum = np.sum(self.n_kv[k, :]) - self.phi_dnv[d][n, k]
-                    n_k_sum = self.n_k[k] - self.phi_dnv[d][n, k]
+                    # Excluding the current word from the counts
+                    phi_dnv_excluded = self.phi_dnv[d][n, k]
 
-                    # The means are computed as per equation (16) from the paper
-                    # Mean of the Bernoulli variables for document-topic (n_dk),
-                    # topic-word (n_kv), and topic (n_k)
-                    E_n_dk = self.n_dk[d, k] - self.phi_dnv[d][n, k]
-                    E_n_kv = self.n_kv[k, word_id] - self.phi_dnv[d][n, k]
-                    E_n_k = self.n_k[k] - self.phi_dnv[d][n, k]
+                    # Compute expected values with smoothing
+                    E_n_dk = self.n_dk[d, k] - phi_dnv_excluded + epsilon 
+                    E_n_kv = self.n_kv[k, word_id] - phi_dnv_excluded + epsilon
+                    E_n_k = self.n_k[k] - phi_dnv_excluded + epsilon
+                    #Compute variances with smoothing
+                    Var_n_dk = E_n_dk * (1 - E_n_dk / (self.n_dk[d, :].sum() - phi_dnv_excluded + epsilon))
+                    Var_n_kv = E_n_kv * (1 - E_n_kv / (self.n_kv[k, :].sum() - phi_dnv_excluded + epsilon))
+                    Var_n_k = E_n_k * (1 - E_n_k / (self.n_k.sum() - phi_dnv_excluded + epsilon))
 
-                    # Variance of the Bernoulli variables as per equation (16) from the paper
-                    Var_n_dk = E_n_dk * (1 - E_n_dk / n_dk_sum)
-                    Var_n_kv = E_n_kv * (1 - E_n_kv / n_kv_sum)
-                    Var_n_k = E_n_k * (1 - E_n_k / n_k_sum)
+                    # Use the Gaussian approximation for the digamma function around the expected values
+                    # This replaces the correction_n_* terms from your current code
+                    approx_digamma_n_dk = digamma(self.alpha + E_n_dk)
+                    approx_digamma_n_kv = digamma(self.beta + E_n_kv)
+                    approx_digamma_n_k = digamma(self.beta * self.V + E_n_k)
+                    
+                    # Adjust gamma_dn with Gaussian approximations
+                    gamma_dn[k] = np.exp(
+                        approx_digamma_n_dk - digamma(self.alpha * self.K + self.n_dk[d, :].sum() + epsilon)
+                        + approx_digamma_n_kv - digamma(self.beta * self.V + self.n_kv[k, :].sum() + epsilon)
+                        + approx_digamma_n_k - digamma(self.beta * self.V * self.K + self.n_k.sum() + epsilon)
+                        # Incorporate the variance approximations here
+                        - Var_n_dk / (2 * (self.alpha + E_n_dk)**2)
+                        - Var_n_kv / (2 * (self.beta + E_n_kv)**2)
+                        - Var_n_k / (2 * (self.beta * self.V + E_n_k)**2)
+                    )
 
-                    # Compute the expectation of the logarithm of a sum, using a Taylor approximation
-                    # as per equation (17) from the paper.
-                    # This uses the digamma function to approximate the expectation
-                    log_term_n_dk = digamma(self.alpha + E_n_dk) - digamma(self.alpha * self.K + n_dk_sum)
-                    log_term_n_kv = digamma(self.beta + E_n_kv) - digamma(self.beta * self.V + n_kv_sum)
-                    log_term_n_k = digamma(self.beta * self.V + E_n_k) - digamma(self.beta * self.V * self.K + n_k_sum)
+                    
 
-                    # Correction terms for the variance in the fields as per the second term in equation (17) from the paper
-                    correction_n_dk = -Var_n_dk / (2 * (self.alpha + E_n_dk)**2)
-                    correction_n_kv = -Var_n_kv / (2 * (self.beta + E_n_kv)**2)
-                    correction_n_k = -Var_n_k / (2 * (self.beta * self.V + E_n_k)**2)
 
-                    # Updating gamma for document n and topic k as per equation (15) from the paper,
-                    # which includes the correction factors for the variance.
-                    gamma_dn[k] = np.exp(log_term_n_dk + correction_n_dk + log_term_n_kv + correction_n_kv + log_term_n_k + correction_n_k)
-
-                # Normalize γ to ensure it sums to 1 across all topics for a given word in a document
+                # Normalizitaion
+                if np.sum(gamma_dn) == 0:
+                    print(f"Sum of gamma is zero for document {d}, word {n}")
+                    gamma_dn += epsilon
                 gamma_dn /= np.sum(gamma_dn)
-                self.phi_dnv[d][n, :] = gamma_dn
+                self.phi_dnv[d][n, :] = gamma_dn 
+
+                # Debug output
+                if np.any(np.abs(self.phi_dnv[d][n, :] - gamma_dn) > 1e-3):
+                    print(f"Significant change in phi for Document {d}, Word {n}: {gamma_dn}")
 
 
-    def run(self, iterations=100):
-        for it in range(iterations):
-            self._update_phi()
-            if it % 10 == 0:
-                print(f"Iteration {it}")
+    # def run(self, iterations=100):
+    #     for it in range(iterations):
+    #         self._update_phi()
+    #         if it % 10 == 0:
+    #             print(f"Iteration {it}")
 
     def get_topic_distributions(self):
         theta_dk = self.n_dk + self.alpha
@@ -103,30 +106,58 @@ class CollapsedVB:
         phi_kv /= np.sum(phi_kv, axis=1, keepdims=True)
         return phi_kv
 
+    def run(self, iterations=100):
+        # Initializing lists to store statistics at each iteration
+        self.log_likelihoods = []
+        self.perplexities = []
+        self.word_ELBO = []  # Track ELBO for the first word in the first document
+
+        for it in range(iterations):
+            self._update_phi()
+            print(self.phi_dnv)
+            word_ELBO = self.calculate_word_ELBO(0, 0)
+            self.word_ELBO.append(word_ELBO)
+            log_likelihood = self.calculate_log_likelihood()
+            self.log_likelihoods.append(log_likelihood)
+            perplexity = self.calculate_perplexity(log_likelihood)
+            self.perplexities.append(perplexity)
+
+            if it % 10 == 0:
+                print(f"Iteration {it}: Log Likelihood: {log_likelihood}, Perplexity: {perplexity}, Word ELBO: {word_ELBO}")
+
+    def calculate_word_ELBO(self, d, n):
+        word_id = self.word_to_id[self.documents[d][n]]
+        term1 = digamma(self.n_kv[:, word_id] + self.beta) - digamma(self.n_k + self.beta * self.V)
+        term2 = digamma(self.n_dk[d, :] + self.alpha) - digamma(self.n_dk[d, :].sum() + self.alpha * self.K)
+        word_ELBO = np.dot(self.phi_dnv[d][n, :], term1 + term2)
+        return word_ELBO
+    
     def calculate_log_likelihood(self):
-        """
-        Calculate the approximate log-likelihood of the entire corpus.
-        """
         log_likelihood = 0.0
-        # Loop over all documents and words to calculate the likelihood
         for d, doc in enumerate(self.documents):
             for n, word in enumerate(doc):
                 word_id = self.word_to_id[word]
-                theta_d = self.n_dk[d, :] + self.alpha
-                theta_d /= np.sum(theta_d)
-                phi_k = self.n_kv[:, word_id] + self.beta
-                phi_k /= np.sum(phi_k)
-                log_likelihood += np.log(np.dot(theta_d, phi_k))
+                # Adding self.beta to avoid division by zero
+                phi_kv = (self.n_kv[:, word_id] + self.beta) / (self.n_k + self.beta * self.V)
+                # Ensure no zero values in the dot product argument
+                phi_kv = np.clip(phi_kv, 1e-10, 1.0)  # Prevent phi_kv from having 0 values
+                if np.isnan(np.log(np.dot(self.phi_dnv[d][n, :], phi_kv))):
+                    pass
+                else:
+                    log_likelihood += np.log(np.dot(self.phi_dnv[d][n, :], phi_kv))
         return log_likelihood
 
-    def calculate_perplexity(self):
-        """
-        Calculate the perplexity of the model on the data.
-        """
-        corpus_log_likelihood = self.calculate_log_likelihood()
-        N = sum(len(doc) for doc in self.documents)  # Total number of words in the corpus
-        perplexity = np.exp(-corpus_log_likelihood / N)
+
+    def calculate_perplexity(self, log_likelihood):
+        N = sum(len(doc) for doc in self.documents)  #Total number of words in the corpus
+        #Check if log_likelihood is not NaN
+        if not np.isnan(log_likelihood) and N > 0:
+            perplexity = np.exp(-log_likelihood / N)
+        else:
+            perplexity = float('inf')  #Assign infinity if the log likelihood is NaN
         return perplexity
+
+
 
 
 if __name__ == "__main__":
@@ -143,5 +174,42 @@ if __name__ == "__main__":
     theta_dk = cvb.get_topic_distributions()
     phi_kv = cvb.get_word_distributions()
 
-    print("Topic distributions per document:", theta_dk)
-    print("Word distributions per topic:", phi_kv)
+
+    import matplotlib.pyplot as plt
+    plt.plot(cvb.log_likelihoods, label='Log Likelihood')
+    plt.plot(cvb.perplexities, label='Perplexity')
+    plt.xlabel('Iterations')
+    plt.ylabel('Metric Value')
+    plt.legend()
+    plt.show()
+
+    plt.figure(figsize=(12, 8))
+
+    iterations = list(range(1, 101))  # 100 iterations
+    cvb_metrics = cvb.log_likelihoods 
+    plt.plot(iterations, cvb_metrics, label='CVB Log Likelihood')
+    plt.xlabel('Iterations')
+    plt.ylabel('Log Likelihood')
+    plt.legend()
+    plt.show()
+
+    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+    for d in range(4):
+        ax[d // 2, d % 2].bar(range(K), theta_dk[d])
+        ax[d // 2, d % 2].set_title(f"Document {d}")
+    plt.show()
+
+    fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+    for k in range(3):
+        ax[k].bar(range(cvb.V), phi_kv[k])
+        ax[k].set_title(f"Topic {k}")
+
+    plt.show()
+
+    plt.figure()
+    plt.plot(range(1, 101), cvb.word_ELBO, label='Per-word ELBO')
+    plt.xlabel('Iterations')
+    plt.ylabel('Per-word ELBO')
+    plt.title('Per-word Variational Bounds over Iterations')
+    plt.legend()
+    plt.show()

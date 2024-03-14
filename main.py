@@ -19,7 +19,7 @@ def plot_metrics(n_d_k, n_k_t):
     plt.show()
 
 if __name__ == '__main__':
-    K=3
+    K=30
     alpha, beta = 0.1, 0.1
     max_iters=100
     doc_word_ids, n_d_k, n_k_t, n_k, word_to_id, id_to_word, V, z_d_i = run_cvb0(documents, K, alpha, beta, max_iters)
