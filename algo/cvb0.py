@@ -1,109 +1,147 @@
-#### ACTUAL
 import numpy as np
-from collections import defaultdict
-from scipy.special import digamma
+from scipy.special import digamma, polygamma
 
-def initialize_lda(documents, K):
-    word_to_id = defaultdict(lambda: len(word_to_id))
-    id_to_word = {}
-    doc_word_ids = []
-
-    # Convert words in documents to unique IDs
-    for doc in documents:
-        doc_ids = [word_to_id[word] for word in doc]
-        doc_word_ids.append(doc_ids)
-
-    # Invert word_to_id to get id_to_word mapping
-    id_to_word = {id_: word for word, id_ in word_to_id.items()}
-
-    V = len(word_to_id)  # Vocabulary size
-    n_d_k = np.zeros((len(documents), K))
-    n_k_t = np.zeros((K, V))
-    n_k = np.zeros(K)
-    z_d_i = [[np.random.randint(K) for _ in doc] for doc in documents]  # Fixed
-
-    for d, doc_ids in enumerate(doc_word_ids):
-        for i, word_id in enumerate(doc_ids):
-
-            topic = z_d_i[d][i]  # Corrected indexing
-            n_d_k[d, topic] += 1
-            n_k_t[topic, word_id] += 1
-            n_k[topic] += 1
-
-    return n_d_k, n_k_t, n_k, z_d_i, word_to_id, id_to_word, V, doc_word_ids
-
-
-
-
-def compute_expectation_terms(gamma_ijk, alpha, beta, n_d_k, n_k_t, n_k, W):
-    # (equation 16)
-    E_gamma_ijk = np.sum(gamma_ijk, axis=0)
-    Var_gamma_ijk = np.sum(gamma_ijk * (1 - gamma_ijk), axis=0)
-
-    # (equation 17)
-    E_log_alpha_n_j_dot_k = digamma(alpha + E_gamma_ijk) - digamma(alpha * K + np.sum(n_d_k))
-    E_log_beta_n_dot_k_x_ij = digamma(beta + n_k_t) - digamma(beta * W + n_k)
-    E_log_W_beta_n_dot_k_dot = digamma(W * beta + n_k) - digamma(W * beta * K + np.sum(n_k))
-    
-    taylor_approx_n_j_dot_k = E_log_alpha_n_j_dot_k - Var_gamma_ijk / (2 * (alpha + E_gamma_ijk)**2)
-    taylor_approx_n_dot_k_x_ij = E_log_beta_n_dot_k_x_ij - n_k_t * (1 - n_k_t / n_k) / (2 * (beta + n_k_t)**2)
-    taylor_approx_n_dot_k_dot = E_log_W_beta_n_dot_k_dot - n_k * (1 - n_k / np.sum(n_k)) / (2 * (W * beta + n_k)**2)
-    
-    return taylor_approx_n_j_dot_k, taylor_approx_n_dot_k_x_ij, taylor_approx_n_dot_k_dot
-
-def cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i):
-    # Initialize gamma_ijk
-    gamma_ijk = np.full((len(doc_word_ids), V, K), 1.0 / K)
-
-    for d, doc_ids in enumerate(doc_word_ids):
-        for i, word_id in enumerate(doc_ids):
-            old_topic = z_d_i[d][i]  # Ensure this is an integer. It should be, based on your initialization.
-            n_d_k[d, old_topic] -= 1
-            n_k_t[old_topic, word_id] -= 1
-            n_k[old_topic] -= 1
-
-            # Compute the expectation terms
-            E_log_alpha_n_j_dot_k, E_log_beta_n_dot_k_x_ij, E_log_W_beta_n_dot_k_dot = compute_expectation_terms(
-                gamma_ijk[d, :, :], alpha, beta, n_d_k[d, :], n_k_t[:, word_id], n_k, W=V
-            )
-
-            # Update gamma_ijk using the computed expectations (equation 18)
-            for k in range(K):
-                gamma_ijk[d, word_id, k] = np.exp(
-                    E_log_alpha_n_j_dot_k[k] +
-                    E_log_beta_n_dot_k_x_ij[k] -
-                    E_log_W_beta_n_dot_k_dot[k]
-                )
-            
-            # Normalize gamma_ijk
-            gamma_ijk[d, word_id, :] /= np.sum(gamma_ijk[d, word_id, :])
+class CollapsedVB:
+    def __init__(self, documents, K, alpha=0.1, beta=0.1):
+        self.documents = documents
+        self.K = K
+        self.alpha = alpha
+        self.beta = beta
+        self.V = self._build_vocabulary()
+        self.D = len(documents)
         
-            # Sample a new topic for the word
-            new_topic = np.random.choice(K, p=gamma_ijk[d, word_id, :])
-            z_d_i[d][i] = new_topic
+        # Initialize counts and φ
+        self.n_dk, self.n_kv, self.n_k = self._initialize_counts()
+        self.phi_dnv = self._initialize_phi()
 
-            # Update the counts with the new topic assignment
-            n_d_k[d, new_topic] += 1
-            n_k_t[new_topic, word_id] += 1
-            n_k[new_topic] += 1
-            
-    return gamma_ijk, z_d_i
+    def _build_vocabulary(self):
+        vocabulary = set(word for doc in self.documents for word in doc)
+        self.word_to_id = {word: id_ for id_, word in enumerate(vocabulary)}
+        return len(vocabulary)
 
-if __name__ == '__main__':
-    documents = [['word1', 'word2', 'word3'], ['word2', 'word3', 'word4'], ['word3', 'word4', 'word1']]
-    K = 3  # Number of topics
-    n_d_k, n_k_t, n_k, z_d_i, word_to_id, id_to_word, V , doc_word_ids= initialize_lda(documents, K)
+    def _initialize_counts(self):
+        n_dk = np.zeros((self.D, self.K))
+        n_kv = np.zeros((self.K, self.V))
+        n_k = np.zeros(self.K)
+        
+        # Random initialization for counts
+        for d, doc in enumerate(self.documents):
+            for word in doc:
+                word_id = self.word_to_id[word]
+                topic = np.random.randint(0, self.K)
+                n_dk[d, topic] += 1
+                n_kv[topic, word_id] += 1
+                n_k[topic] += 1
+        return n_dk, n_kv, n_k
 
-    alpha, beta = 0.1, 0.1
-    max_iters = 100
-    for _ in range(max_iters):
-        gamma_ijk, z_d_i = cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i)  # Updated to include z_d_i
+    def _initialize_phi(self):
+        # Initialize φ with uniform probabilities
+        phi_dnv = {}
+        for d, doc in enumerate(self.documents):
+            phi_dnv[d] = np.full((len(doc), self.K), 1.0 / self.K)
+        return phi_dnv
 
-    print('Document-topic counts:', n_d_k)
-    print('Topic-term counts:', n_k_t)
-    print('Topic counts:', n_k)
-    print('Topic assignments for words in documents:', z_d_i)
-    print('Word to ID mapping:', word_to_id)
-    print('ID to word mapping:', id_to_word)
-    print('Vocabulary size:', V)
-    print('Done')
+    def _update_phi(self):
+        for d, doc in enumerate(self.documents):
+            for n, word in enumerate(doc):
+                word_id = self.word_to_id[word]
+                gamma_dn = np.zeros(self.K)
+                for k in range(self.K):
+                    # The sums here are not directly from the paper but are necessary to compute the means
+                    # for each document-topic (n_dk), topic-word (n_kv), and topic (n_k) after excluding
+                    # the current assignment of word n to topic k (phi_dnv)
+                    n_dk_sum = np.sum(self.n_dk[d, :]) - self.phi_dnv[d][n, k]
+                    n_kv_sum = np.sum(self.n_kv[k, :]) - self.phi_dnv[d][n, k]
+                    n_k_sum = self.n_k[k] - self.phi_dnv[d][n, k]
+
+                    # The means are computed as per equation (16) from the paper
+                    # Mean of the Bernoulli variables for document-topic (n_dk),
+                    # topic-word (n_kv), and topic (n_k)
+                    E_n_dk = self.n_dk[d, k] - self.phi_dnv[d][n, k]
+                    E_n_kv = self.n_kv[k, word_id] - self.phi_dnv[d][n, k]
+                    E_n_k = self.n_k[k] - self.phi_dnv[d][n, k]
+
+                    # Variance of the Bernoulli variables as per equation (16) from the paper
+                    Var_n_dk = E_n_dk * (1 - E_n_dk / n_dk_sum)
+                    Var_n_kv = E_n_kv * (1 - E_n_kv / n_kv_sum)
+                    Var_n_k = E_n_k * (1 - E_n_k / n_k_sum)
+
+                    # Compute the expectation of the logarithm of a sum, using a Taylor approximation
+                    # as per equation (17) from the paper.
+                    # This uses the digamma function to approximate the expectation
+                    log_term_n_dk = digamma(self.alpha + E_n_dk) - digamma(self.alpha * self.K + n_dk_sum)
+                    log_term_n_kv = digamma(self.beta + E_n_kv) - digamma(self.beta * self.V + n_kv_sum)
+                    log_term_n_k = digamma(self.beta * self.V + E_n_k) - digamma(self.beta * self.V * self.K + n_k_sum)
+
+                    # Correction terms for the variance in the fields as per the second term in equation (17) from the paper
+                    correction_n_dk = -Var_n_dk / (2 * (self.alpha + E_n_dk)**2)
+                    correction_n_kv = -Var_n_kv / (2 * (self.beta + E_n_kv)**2)
+                    correction_n_k = -Var_n_k / (2 * (self.beta * self.V + E_n_k)**2)
+
+                    # Updating gamma for document n and topic k as per equation (15) from the paper,
+                    # which includes the correction factors for the variance.
+                    gamma_dn[k] = np.exp(log_term_n_dk + correction_n_dk + log_term_n_kv + correction_n_kv + log_term_n_k + correction_n_k)
+
+                # Normalize γ to ensure it sums to 1 across all topics for a given word in a document
+                gamma_dn /= np.sum(gamma_dn)
+                self.phi_dnv[d][n, :] = gamma_dn
+
+
+    def run(self, iterations=100):
+        for it in range(iterations):
+            self._update_phi()
+            if it % 10 == 0:
+                print(f"Iteration {it}")
+
+    def get_topic_distributions(self):
+        theta_dk = self.n_dk + self.alpha
+        theta_dk /= np.sum(theta_dk, axis=1, keepdims=True)
+        return theta_dk
+
+    def get_word_distributions(self):
+        phi_kv = self.n_kv + self.beta
+        phi_kv /= np.sum(phi_kv, axis=1, keepdims=True)
+        return phi_kv
+
+    def calculate_log_likelihood(self):
+        """
+        Calculate the approximate log-likelihood of the entire corpus.
+        """
+        log_likelihood = 0.0
+        # Loop over all documents and words to calculate the likelihood
+        for d, doc in enumerate(self.documents):
+            for n, word in enumerate(doc):
+                word_id = self.word_to_id[word]
+                theta_d = self.n_dk[d, :] + self.alpha
+                theta_d /= np.sum(theta_d)
+                phi_k = self.n_kv[:, word_id] + self.beta
+                phi_k /= np.sum(phi_k)
+                log_likelihood += np.log(np.dot(theta_d, phi_k))
+        return log_likelihood
+
+    def calculate_perplexity(self):
+        """
+        Calculate the perplexity of the model on the data.
+        """
+        corpus_log_likelihood = self.calculate_log_likelihood()
+        N = sum(len(doc) for doc in self.documents)  # Total number of words in the corpus
+        perplexity = np.exp(-corpus_log_likelihood / N)
+        return perplexity
+
+
+if __name__ == "__main__":
+    documents = [
+        ["apple", "orange", "banana", "apple"],
+        ["orange", "banana", "apple", "fruit"],
+        ["berry", "fruit", "apple", "banana"],
+        ["apple", "berry", "orange", "fruit"]
+    ]
+    K = 3
+    cvb = CollapsedVB(documents, K)
+    cvb.run(100)
+    
+    theta_dk = cvb.get_topic_distributions()
+    phi_kv = cvb.get_word_distributions()
+
+    print("Topic distributions per document:", theta_dk)
+    print("Word distributions per topic:", phi_kv)
