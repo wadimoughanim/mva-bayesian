@@ -1,109 +1,85 @@
-#### ACTUAL
 import numpy as np
-from collections import defaultdict
-from scipy.special import digamma
+from scipy.special import digamma, polygamma
 
-def initialize_lda(documents, K):
-    word_to_id = defaultdict(lambda: len(word_to_id))
-    id_to_word = {}
-    doc_word_ids = []
-
-    # Convert words in documents to unique IDs
-    for doc in documents:
-        doc_ids = [word_to_id[word] for word in doc]
-        doc_word_ids.append(doc_ids)
-
-    # Invert word_to_id to get id_to_word mapping
-    id_to_word = {id_: word for word, id_ in word_to_id.items()}
-
-    V = len(word_to_id)  # Vocabulary size
-    n_d_k = np.zeros((len(documents), K))
-    n_k_t = np.zeros((K, V))
+def initialize_lda(documents, K, V):
+    """
+    Initialize the LDA model parameters and variables.
+    """
+    D = len(documents)  # Number of documents
+    n_dk = np.zeros((D, K))
+    n_kv = np.zeros((K, V))
     n_k = np.zeros(K)
-    z_d_i = [[np.random.randint(K) for _ in doc] for doc in documents]  # Fixed
+    z_dn = [[np.random.choice(K) for _ in doc] for doc in documents]
 
-    for d, doc_ids in enumerate(doc_word_ids):
-        for i, word_id in enumerate(doc_ids):
-
-            topic = z_d_i[d][i]  # Corrected indexing
-            n_d_k[d, topic] += 1
-            n_k_t[topic, word_id] += 1
+    # Initialize counts
+    for d, doc in enumerate(documents):
+        for n, word_id in enumerate(doc):
+            topic = z_dn[d][n]
+            n_dk[d, topic] += 1
+            n_kv[topic, word_id] += 1
             n_k[topic] += 1
 
-    return n_d_k, n_k_t, n_k, z_d_i, word_to_id, id_to_word, V, doc_word_ids
+    return n_dk, n_kv, n_k, z_dn
 
+def compute_expectations(alpha, beta, n_dk, n_kv, n_k, D, V, K):
+    """
+    Compute the expectations using Gaussian approximations.
+    """
+    E_log_theta_dk = digamma(n_dk + alpha) - digamma(np.sum(n_dk, axis=1)[:, np.newaxis] + K*alpha)
+    E_log_phi_kv = digamma(n_kv + beta) - digamma(n_k + V*beta)
 
+    # Gaussian approximations for the variances
+    var_theta_dk = polygamma(1, n_dk + alpha)
+    var_phi_kv = polygamma(1, n_kv + beta)
 
+    return E_log_theta_dk, E_log_phi_kv, var_theta_dk, var_phi_kv
 
-def compute_expectation_terms(gamma_ijk, alpha, beta, n_d_k, n_k_t, n_k, W):
-    # (equation 16)
-    E_gamma_ijk = np.sum(gamma_ijk, axis=0)
-    Var_gamma_ijk = np.sum(gamma_ijk * (1 - gamma_ijk), axis=0)
+def cvb_update(documents, z_dn, n_dk, n_kv, n_k, alpha, beta, V, K, E_log_theta_dk, E_log_phi_kv):
+    """
+    Update the CVB assignments for each word in each document.
+    """
+    D = len(documents)
 
-    # (equation 17)
-    E_log_alpha_n_j_dot_k = digamma(alpha + E_gamma_ijk) - digamma(alpha * K + np.sum(n_d_k))
-    E_log_beta_n_dot_k_x_ij = digamma(beta + n_k_t) - digamma(beta * W + n_k)
-    E_log_W_beta_n_dot_k_dot = digamma(W * beta + n_k) - digamma(W * beta * K + np.sum(n_k))
-    
-    taylor_approx_n_j_dot_k = E_log_alpha_n_j_dot_k - Var_gamma_ijk / (2 * (alpha + E_gamma_ijk)**2)
-    taylor_approx_n_dot_k_x_ij = E_log_beta_n_dot_k_x_ij - n_k_t * (1 - n_k_t / n_k) / (2 * (beta + n_k_t)**2)
-    taylor_approx_n_dot_k_dot = E_log_W_beta_n_dot_k_dot - n_k * (1 - n_k / np.sum(n_k)) / (2 * (W * beta + n_k)**2)
-    
-    return taylor_approx_n_j_dot_k, taylor_approx_n_dot_k_x_ij, taylor_approx_n_dot_k_dot
+    for d in range(D):
+        doc = documents[d]
+        for n, word_id in enumerate(doc):
+            old_topic = z_dn[d][n]
 
-def cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i):
-    # Initialize gamma_ijk
-    gamma_ijk = np.full((len(doc_word_ids), V, K), 1.0 / K)
-
-    for d, doc_ids in enumerate(doc_word_ids):
-        for i, word_id in enumerate(doc_ids):
-            old_topic = z_d_i[d][i]  # Ensure this is an integer. It should be, based on your initialization.
-            n_d_k[d, old_topic] -= 1
-            n_k_t[old_topic, word_id] -= 1
+            # Remove current word's influence
+            n_dk[d, old_topic] -= 1
+            n_kv[old_topic, word_id] -= 1
             n_k[old_topic] -= 1
 
-            # Compute the expectation terms
-            E_log_alpha_n_j_dot_k, E_log_beta_n_dot_k_x_ij, E_log_W_beta_n_dot_k_dot = compute_expectation_terms(
-                gamma_ijk[d, :, :], alpha, beta, n_d_k[d, :], n_k_t[:, word_id], n_k, W=V
-            )
+            # Update expectations
+            E_log_theta_dk[d], E_log_phi_kv[:, word_id], _, _ = compute_expectations(alpha, beta, n_dk, n_kv, n_k, D, V, K)
 
-            # Update gamma_ijk using the computed expectations (equation 18)
-            for k in range(K):
-                gamma_ijk[d, word_id, k] = np.exp(
-                    E_log_alpha_n_j_dot_k[k] +
-                    E_log_beta_n_dot_k_x_ij[k] -
-                    E_log_W_beta_n_dot_k_dot[k]
-                )
-            
-            # Normalize gamma_ijk
-            gamma_ijk[d, word_id, :] /= np.sum(gamma_ijk[d, word_id, :])
-        
-            # Sample a new topic for the word
-            new_topic = np.random.choice(K, p=gamma_ijk[d, word_id, :])
-            z_d_i[d][i] = new_topic
+            # Compute the topic assignment probabilities
+            p_z_dn = np.exp(E_log_theta_dk[d] + E_log_phi_kv[:, word_id])
+            p_z_dn /= np.sum(p_z_dn)
 
-            # Update the counts with the new topic assignment
-            n_d_k[d, new_topic] += 1
-            n_k_t[new_topic, word_id] += 1
+            # Sample a new topic based on the computed probabilities
+            new_topic = np.random.choice(K, p=p_z_dn)
+
+            # Update counts with the new topic assignment
+            n_dk[d, new_topic] += 1
+            n_kv[new_topic, word_id] += 1
             n_k[new_topic] += 1
-            
-    return gamma_ijk, z_d_i
 
-if __name__ == '__main__':
+            # Update the topic assignment
+            z_dn[d][n] = new_topic
+
+    return z_dn, n_dk, n_kv, n_k
+
+if __name__ == "__main__":
+    # Example usage
     documents = [['word1', 'word2', 'word3'], ['word2', 'word3', 'word4'], ['word3', 'word4', 'word1']]
-    K = 3  # Number of topics
-    n_d_k, n_k_t, n_k, z_d_i, word_to_id, id_to_word, V , doc_word_ids= initialize_lda(documents, K)
-
+    K = 3  # Number of topics    V = ...  # Vocabulary size
+    V = 4
     alpha, beta = 0.1, 0.1
-    max_iters = 100
-    for _ in range(max_iters):
-        gamma_ijk, z_d_i = cvb0_exact_update(doc_word_ids, n_d_k, n_k_t, n_k, alpha, beta, V, K, z_d_i)  # Updated to include z_d_i
 
-    print('Document-topic counts:', n_d_k)
-    print('Topic-term counts:', n_k_t)
-    print('Topic counts:', n_k)
-    print('Topic assignments for words in documents:', z_d_i)
-    print('Word to ID mapping:', word_to_id)
-    print('ID to word mapping:', id_to_word)
-    print('Vocabulary size:', V)
-    print('Done')
+    n_dk, n_kv, n_k, z_dn = initialize_lda(documents, K, V)
+    E_log_theta_dk, E_log_phi_kv, var_theta_dk, var_phi_kv = compute_expectations(alpha, beta, n_dk, n_kv, n_k, len(documents), V, K)
+
+    for iteration in range(100):  # Number of iterations
+        z_dn, n_dk, n_kv, n_k = cvb_update(documents, z_dn, n_dk, n_kv, n_k, alpha, beta, V, K, E_log_theta_dk, E_log_phi_kv)
+        # Optionally: Check for convergence
